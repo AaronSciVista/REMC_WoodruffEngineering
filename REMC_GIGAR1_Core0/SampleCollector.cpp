@@ -8,12 +8,15 @@ volatile size_t SampleCollector::ringCapacity = 0;
 volatile size_t SampleCollector::ringHead = 0;
 volatile size_t SampleCollector::totalSamplesReceived = 0;
 
-volatile bool SampleCollector::gatheringActive = false;
+volatile bool SampleCollector::denseGatheringActive = false;
 volatile int SampleCollector::gatheringStart = 0;
 volatile int SampleCollector::gatheringStop = 0;
 volatile size_t SampleCollector::samplesNeeded = 0;
 volatile size_t SampleCollector::samplesCollected = 0;
 volatile size_t SampleCollector::gatheringStartSampleCount = 0;
+
+// Live feed state
+volatile size_t SampleCollector::liveFeedCounter = 0;
 
 // Window storage variables
 volatile int SampleCollector::windowStart = -50000;
@@ -50,12 +53,13 @@ bool SampleCollector::init(size_t capacity) {
     // Reset state
     ringHead = 0;
     totalSamplesReceived = 0;
-    gatheringActive = false;
+    denseGatheringActive = false;
     gatheringStart = 0;
     gatheringStop = 0;
     samplesNeeded = 0;
     samplesCollected = 0;
     gatheringStartSampleCount = 0;
+    liveFeedCounter = 0;
     ringCount = 0;
     ringIndex = 0;
     
@@ -72,9 +76,35 @@ void SampleCollector::update() {
             storeSampleInRing(sampleBuffer[i]);
         }
         
-        // If gathering is active, check if we can send samples now
-        if (gatheringActive && canSendNow()) {
-            extractRequestedSamples();
+        // If dense gathering is active, check if we can send samples now and do it
+        if (denseGatheringActive) {
+            if(canSendNow()) {
+                extractRequestedSamples();
+            }
+        }
+        else
+        {
+            // Send live feed samples when not doing dense gathering
+            // Send every 1/liveFeedRatio samples for dashboard live feed
+            for (size_t i = 0; i < count; i++) {
+                liveFeedCounter++;
+                if (liveFeedCounter >= liveFeedRatio) {
+                    liveFeedCounter = 0;
+                    // Send this sample as individual telemetry (not part of a batch)
+                    UdpManager::addSample(sampleBuffer[i]);
+                    UdpManager::flushSamples();
+                    
+                    // Print SharedRing buffer status
+                    Serial.print("[SampleCollector] Live feed sent - SharedRing status: head=");
+                    Serial.print(g_ring.head);
+                    Serial.print(", tail=");
+                    Serial.print(g_ring.tail);
+                    Serial.print(", overruns=");
+                    Serial.print(g_ring.overruns);
+                    Serial.print(", capacity=");
+                    Serial.println(g_ring.capacity);
+                }
+            }
         }
     }
 }
@@ -173,8 +203,8 @@ void SampleCollector::startGathering(int start, int stop) {
     samplesCollected = 0;
     gatheringStartSampleCount = totalSamplesReceived;
     
-    // Enable gathering
-    gatheringActive = true;
+    // Enable dense gathering
+    denseGatheringActive = true;
     
     Serial.print("[SampleCollector] Gathering configured for ");
     Serial.print(samplesNeeded);
@@ -258,13 +288,13 @@ void SampleCollector::stopGathering() {
     Serial.print(samplesNeeded);
     Serial.println(" samples");
     
-    // Disable gathering
-    gatheringActive = false;
+    // Disable dense gathering
+    denseGatheringActive = false;
 }
 
 void SampleCollector::sendAllSamples() {
-    if (!gatheringActive) {
-        Serial.println("[SampleCollector] No active gathering to send");
+    if (!denseGatheringActive) {
+        Serial.println("[SampleCollector] No active dense gathering to send");
         return;
     }
     
@@ -279,7 +309,7 @@ size_t SampleCollector::getSamplesStored() {
 }
 
 bool SampleCollector::isGathering() {
-    return gatheringActive;
+    return denseGatheringActive;
 }
 
 size_t SampleCollector::getStorageCapacity() {

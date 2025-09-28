@@ -37,13 +37,17 @@ private:
     static volatile size_t ringHead;
     static volatile size_t totalSamplesReceived;
     
-    // Gathering state
-    static volatile bool gatheringActive;
+    // Dense gathering state
+    static volatile bool denseGatheringActive;
     static volatile int gatheringStart;
     static volatile int gatheringStop;
     static volatile size_t samplesNeeded;
     static volatile size_t samplesCollected;
     static volatile size_t gatheringStartSampleCount;
+    
+    // Live feed state
+    static const int liveFeedRatio = 10000;  // Send every 1/N samples as live feed
+    static volatile size_t liveFeedCounter;
     
     // Window storage
     static volatile int windowStart;
