@@ -206,6 +206,12 @@ data_lock = threading.Lock()
 historical_data_log = deque(maxlen=MAX_RECORDS_IN_RAM)
 historical_data_lock = threading.Lock()
 
+# --- Live Feed Data Storage (only flags=0 samples) ---
+# Keep 1 minute of live feed data at 10kHz sample rate / 10000 ratio = ~6 samples per minute
+# But we'll keep more to handle varying rates and ensure smooth graphs
+live_feed_data = deque(maxlen=1000)  # Keep last 1000 live feed samples
+live_feed_lock = threading.Lock()
+
 # --- Batch Collection Storage ---
 collection_batches = {}  # Dictionary: batch_id -> batch_data
 batches_lock = threading.Lock()
@@ -279,7 +285,9 @@ def udp_listener_thread():
                         sample_size_str = " (no timestamps)"
                 print(f"[UDP] Packet {packet_count}: Bundle of {len(samples)} samples ({len(data)} bytes){sample_size_str}")
 
-            # Process samples for both historical logging and batch capture
+            # Process samples for both historical logging and live feed
+            flags = header.get('flags', 0)
+            
             with historical_data_lock:
                 for s in samples:
                     if s.get('sample_timestamp_us') is not None:
@@ -304,6 +312,11 @@ def udp_listener_thread():
 
                     # Add to continuous historical log
                     historical_data_log.append(sample_record)
+                    
+                    # Add to live feed if this is a normal sample (flags=0)
+                    if flags == 0:  # FLAGS_NORMAL - live feed samples
+                        with live_feed_lock:
+                            live_feed_data.append(sample_record)
 
             # Check if we're in batch capture mode
             with batches_lock:
@@ -467,6 +480,28 @@ def get_telemetry_data():
     return jsonify(data_to_send)
 
 
+@app.route('/live_feed')
+def get_live_feed_data():
+    """Get live feed samples from the last minute for graphing"""
+    with live_feed_lock:
+        # Get samples from the last 60 seconds
+        current_time = time.time()
+        cutoff_time = current_time - 60  # 60 seconds ago
+        
+        # Filter to only recent samples
+        recent_samples = [
+            sample for sample in live_feed_data 
+            if sample.get('timestamp', 0) >= cutoff_time
+        ]
+        
+        # Return the data
+        return jsonify({
+            'samples': recent_samples,
+            'count': len(recent_samples),
+            'time_range_seconds': 60
+        })
+
+
 @app.route('/download_csv')
 def download_csv_route():
     csv_fieldnames = LOGGING_DATA_FIELDS
@@ -601,6 +636,16 @@ def get_javascript_html():
     <script>
       const POLLING_INTERVAL_MS = 500;
       let manualMode = false;
+      
+      // Live Feed Chart Variables
+      let liveFeedChart = null;
+      const chartDataSeries = {
+        'switch_voltage_kv': { label: 'Switch Voltage (kV)', color: '#ff6384', visible: true },
+        'switch_current_a': { label: 'Switch Current (kA)', color: '#36a2eb', visible: true },
+        'output_voltage_a_kv': { label: 'Output A (kV)', color: '#ffce56', visible: true },
+        'output_voltage_b_kv': { label: 'Output B (kV)', color: '#4bc0c0', visible: true },
+        'temperature_1_degc': { label: 'Temperature (°C)', color: '#9966ff', visible: true }
+      };
 
       async function sendCommand(endpoint) {
         try {
@@ -627,6 +672,122 @@ def get_javascript_html():
 
       function formatFloat(v) {
         return (typeof v === 'number' && !isNaN(v)) ? v.toFixed(2) : 'N/A';
+      }
+
+      function initializeLiveFeedChart() {
+        const ctx = document.getElementById('liveFeedChart').getContext('2d');
+        
+        liveFeedChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            datasets: Object.keys(chartDataSeries).map(key => ({
+              label: chartDataSeries[key].label,
+              data: [],
+              borderColor: chartDataSeries[key].color,
+              backgroundColor: chartDataSeries[key].color + '20',
+              fill: false,
+              tension: 0.1,
+              pointRadius: 2,
+              pointHoverRadius: 4,
+              hidden: !chartDataSeries[key].visible
+            }))
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              intersect: false,
+              mode: 'index'
+            },
+            scales: {
+              x: {
+                type: 'time',
+                time: {
+                  unit: 'second',
+                  displayFormats: {
+                    second: 'HH:mm:ss'
+                  }
+                },
+                title: {
+                  display: true,
+                  text: 'Time'
+                }
+              },
+              y: {
+                title: {
+                  display: true,
+                  text: 'Value'
+                }
+              }
+            },
+            plugins: {
+              legend: {
+                display: true,
+                position: 'top'
+              },
+              tooltip: {
+                callbacks: {
+                  title: function(context) {
+                    return new Date(context[0].parsed.x).toLocaleTimeString();
+                  },
+                  label: function(context) {
+                    return context.dataset.label + ': ' + context.parsed.y.toFixed(3);
+                  }
+                }
+              }
+            }
+          }
+        });
+      }
+
+      async function updateLiveFeedChart() {
+        try {
+          const res = await fetch('/live_feed');
+          if (!res.ok) throw new Error(res.status);
+          const data = await res.json();
+
+          if (liveFeedChart && data.samples) {
+            // Prepare data for each series
+            const seriesData = {};
+            Object.keys(chartDataSeries).forEach(key => {
+              seriesData[key] = data.samples
+                .filter(sample => sample[key] !== null && sample[key] !== undefined)
+                .map(sample => ({
+                  x: sample.timestamp * 1000, // Convert to milliseconds for Chart.js
+                  y: sample[key]
+                }))
+                .sort((a, b) => a.x - b.x); // Sort by time
+            });
+
+            // Update chart datasets
+            liveFeedChart.data.datasets.forEach((dataset, index) => {
+              const seriesKey = Object.keys(chartDataSeries)[index];
+              dataset.data = seriesData[seriesKey] || [];
+            });
+
+            liveFeedChart.update('none'); // Update without animation for smoother performance
+          }
+        } catch (err) {
+          console.error('Error updating live feed chart:', err);
+        }
+      }
+
+      function toggleDataSeries(seriesKey) {
+        const seriesIndex = Object.keys(chartDataSeries).indexOf(seriesKey);
+        if (seriesIndex >= 0 && liveFeedChart) {
+          const dataset = liveFeedChart.data.datasets[seriesIndex];
+          dataset.hidden = !dataset.hidden;
+          chartDataSeries[seriesKey].visible = !dataset.hidden;
+          
+          // Force a complete redraw to clean up any visual artifacts
+          liveFeedChart.update('none');
+          
+          // Update button appearance
+          const button = document.querySelector(`[data-series="${seriesKey}"]`);
+          if (button) {
+            button.classList.toggle('active', !dataset.hidden);
+          }
+        }
       }
 
       document.addEventListener('DOMContentLoaded', () => {
@@ -684,11 +845,24 @@ def get_javascript_html():
           });
         }
 
+        // wire live feed toggle buttons
+        document.querySelectorAll('.toggle-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const seriesKey = btn.getAttribute('data-series');
+            toggleDataSeries(seriesKey);
+          });
+        });
+
+        // initialize live feed chart
+        initializeLiveFeedChart();
+
         // start polling
         fetchDataAndUpdate();
         fetchBatchesAndUpdate();
+        updateLiveFeedChart(); // Initial chart update
         setInterval(fetchDataAndUpdate, POLLING_INTERVAL_MS);
         setInterval(fetchBatchesAndUpdate, 2000); // Update batches every 2 seconds
+        setInterval(updateLiveFeedChart, 2000); // Update live feed chart every 2 seconds
       });
 
       async function sendCollectCommand() {
@@ -937,6 +1111,8 @@ def index_page():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width,initial-scale=1.0">
         <title>REMC Switch Dashboard</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
  <style>
           body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -1062,6 +1238,142 @@ def index_page():
           tr:nth-child(even) {{
             background-color: #f9f9f9;
           }}
+          
+          /* Live Feed Chart Styles */
+          .live-feed-controls {{
+            margin-bottom: 20px;
+          }}
+          .toggle-buttons {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+          }}
+          .toggle-btn {{
+            padding: 6px 12px;
+            font-size: 12px;
+            border: 2px solid;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin: 2px;
+            font-weight: 500;
+            opacity: 0.6;
+            min-width: 120px;
+            text-align: center;
+          }}
+          .toggle-btn.active {{
+            opacity: 1;
+            font-weight: 500;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+          }}
+          .toggle-btn:hover {{
+            opacity: 0.8;
+            transform: translateY(-1px);
+          }}
+          .toggle-btn.active:hover {{
+            opacity: 1;
+            transform: translateY(-1px);
+          }}
+          
+          /* Individual series button colors - INACTIVE state */
+          #toggle-voltage {{
+            border-color: #ff6384;
+            background-color: #fff;
+            color: #ff6384;
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          #toggle-voltage.active {{
+            background-color: #ff6384;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          
+          #toggle-current {{
+            border-color: #36a2eb;
+            background-color: #fff;
+            color: #36a2eb;
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          #toggle-current.active {{
+            background-color: #36a2eb;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          
+          #toggle-output-a {{
+            border-color: #ffce56;
+            background-color: #fff;
+            color: #ffce56;
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          #toggle-output-a.active {{
+            background-color: #ffce56;
+            color: #333;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          
+          #toggle-output-b {{
+            border-color: #4bc0c0;
+            background-color: #fff;
+            color: #4bc0c0;
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          #toggle-output-b.active {{
+            background-color: #4bc0c0;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          
+          #toggle-temp {{
+            border-color: #9966ff;
+            background-color: #fff;
+            color: #9966ff;
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          #toggle-temp.active {{
+            background-color: #9966ff;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            font-weight: 500;
+            min-width: 120px;
+            text-align: center;
+          }}
+          .chart-container {{
+            position: relative;
+            height: 400px;
+            margin: 20px 0;
+            background-color: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 10px;
+          }}
+          .chart-container canvas {{
+            max-width: 100%;
+            height: auto;
+          }}
         </style>
       </head>
       <body>
@@ -1104,7 +1416,20 @@ def index_page():
 
           <h2>Data Collection</h2>
           <div class="button-group">
-            <h3>Collect Data Batch</h3>
+            <h3>Live Feed</h3>
+            <div class="live-feed-controls">
+              <div class="toggle-buttons">
+                <button type="button" id="toggle-voltage" class="toggle-btn active" data-series="switch_voltage_kv">Switch Voltage (kV)</button>
+                <button type="button" id="toggle-current" class="toggle-btn active" data-series="switch_current_a">Switch Current (kA)</button>
+                <button type="button" id="toggle-output-a" class="toggle-btn active" data-series="output_voltage_a_kv">Output A (kV)</button>
+                <button type="button" id="toggle-output-b" class="toggle-btn active" data-series="output_voltage_b_kv">Output B (kV)</button>
+                <button type="button" id="toggle-temp" class="toggle-btn active" data-series="temperature_1_degc">Temperature (°C)</button>
+              </div>
+            </div>
+            <div class="chart-container">
+              <canvas id="liveFeedChart" width="800" height="400"></canvas>
+            </div>
+            <h3>Dense Sampling</h3>
             <div style="margin: 10px 0;">
               <label for="sample-start" style="margin-right: 10px;">Start at sample:</label>
               <input type="number" id="sample-start" name="sample_start" value="-1000" 
@@ -1120,14 +1445,14 @@ def index_page():
               <strong>Example:</strong> To capture 0.5 seconds before and after, use -5000 to +5000 (10,000 samples/sec)
             </p>
             <div style="margin-top: 15px;">
-              <button type="button" id="collect-button" class="button download">Collect Data</button>
+              <button type="button" id="collect-button" class="button download">Collect Batch</button>
             </div>
           <hr style="width: 95%; margin: 20px auto; border: 0; border-top: 1px solid #ccc;">
             <div id="batches-list" style="margin: 10px 0;">
               <p style="color: #666;">Loading batches...</p>
             </div>
           </div>
-
+    
           <div class="section">
             <h2>System Status</h2>
             <!-- status lines and the tables below -->
