@@ -190,6 +190,7 @@ void init() {
     Serial.println(CMD_PORT);
   }
 
+  // NTP port
   Serial.print(F("UdpManager: Binding NTP on port "));
   Serial.println(NTP_PORT);
   if (ntpUdp.begin(NTP_PORT) != 1) {
@@ -198,9 +199,6 @@ void init() {
 
   calcSchemaHash();
 
-  // Initialize time (replace with actual time sync)
-  // This is a placeholder!  You'll need a proper time synchronization mechanism.
-  setTime(0, 0, 0, 1, 1, 2024);  // Dummy time - replace with actual time sync
   Serial.println(F("[UDP] init complete."));
 }
 

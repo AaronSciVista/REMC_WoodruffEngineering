@@ -1,4 +1,5 @@
 #include "NTPClient.h"
+#include "w5100mod.h"
 
 static const uint32_t NTP_UNIX_EPOCH_DIFF = 2208988800UL; // seconds between 1900 and 1970
 static const int NTP_PACKET_SIZE = 48;
@@ -16,44 +17,83 @@ NTPClient::NTPClient(EthernetUDP* udp) {
 
 // Singleton implementation
 NTPClient& NTPClient::getInstance() {
-  if (_instance == nullptr) {
-    _instance = new NTPClient();
-  }
   return *_instance;
 }
 
 // Static initialization method
 void NTPClient::initialize(EthernetUDP* udp) {
-  NTPClient& instance = getInstance();
-  if (udp) {
-    instance._udp = udp;
+  // Create singleton instance if it doesn't exist
+  if (_instance == nullptr) {
+    _instance = new NTPClient(udp);
   }
 }
 
-// Static wrapper methods
-uint64_t NTPClient::nowMicros() {
-  return getInstance().nowMicrosInstance();
-}
 
+
+
+
+
+
+// Static wrapper methods
+uint64_t NTPClient::serverMicrosAtSync() {
+  return getInstance().serverMicrosAtSyncInstance();
+}
+uint64_t NTPClient::localMicrosAtSync() {
+  return getInstance().localMicrosAtSyncInstance();
+}
 bool NTPClient::hasSynced() {
   return getInstance().hasSyncedInstance();
 }
 
-uint64_t NTPClient::lastSyncUnixUs() {
-  return getInstance().lastSyncUnixUsInstance();
-}
-
-uint64_t NTPClient::baseOffsetUs() {
-  return getInstance().baseOffsetUsInstance();
-}
-
-bool NTPClient::sync(uint16_t timeout_ms) {
-  return getInstance().syncInstance(timeout_ms);
+bool NTPClient::requestTime() {
+  return getInstance().requestTimeInstance();
 }
 
 bool NTPClient::begin(const char* server, uint16_t ntpPort) {
   return getInstance().beginInstance(server, ntpPort);
 }
+
+void NTPClient::update() {
+  getInstance().updateInstance();
+}
+// -------------
+
+
+
+
+
+
+
+// ISR Utility methods
+void clearSIRs() { // After a socket IR, SnIR and SIR need to be reset
+  // for (int i=0;i<8;i++) {
+  //   W5100.writeSnIR(i,0xFF); // Clear socket i interrupt
+  // }
+  // W5100.writeSIR(0xFF); // Clear SIR
+  W5100.writeSnIR(2,0xFF); // Clear socket i interrupt
+  W5100.writeSIR(0x04); // Clear SIR
+}
+
+// disable interrupts for all sockets
+inline void disableSIRs() {W5100.writeSIMR(0x00);}
+
+// enable interrupts for socket 2
+inline void enableSIRs() {W5100.writeSIMR(0x04);}
+
+// Interrupt service routine
+uint32_t requestsSent = 0;
+uint32_t responsesReceived = 0;
+uint64_t lastResponseTime = 0;
+uint32_t responsesProcessed = 0;
+
+void socketISR()
+{
+  uint64_t now = HardwareTimer::getMicros64();
+  lastResponseTime = now;
+  responsesReceived++;
+}
+// -------------
+
 
 bool NTPClient::beginInstance(const char* server, uint16_t ntpPort) {
   _serverPort = ntpPort;
@@ -69,13 +109,18 @@ bool NTPClient::beginInstance(const char* server, uint16_t ntpPort) {
     Serial.println("[NTP] ERROR: Failed to resolve server address");
   }
   
-  return _serverResolved;
+  // This is the interrupt pin for the W5500 shield
+  pinMode(2, INPUT);
+  for (int i = 0; i < 8; i++) {
+    W5100.writeSnIMR(i,0x04);  // Socket IR mask: RECV for all sockets
+  }
+  enableSIRs();
+  attachInterrupt(digitalPinToInterrupt(2), socketISR, FALLING);
+  _interruptEnabled = true;
+
+  return _serverResolved && _interruptEnabled;
 }
 
-bool NTPClient::setServer(const char* server) {
-  _serverResolved = resolveServerIP(server);
-  return _serverResolved;
-}
 
 bool NTPClient::resolveServerIP(const char* server) {
   // Try dotted-quad first
@@ -164,7 +209,8 @@ bool NTPClient::sendRequest() {
   return true;
 }
 
-bool NTPClient::readResponse(uint32_t& secs, uint32_t& frac) {
+bool NTPClient::readResponse(uint64_t& microseconds) {
+  microseconds = 0;
   int size = _udp->parsePacket();
   if (size == 0) return false;  // No packet available
   
@@ -201,20 +247,15 @@ bool NTPClient::readResponse(uint32_t& secs, uint32_t& frac) {
   }
 
   // Transmit Timestamp starts at byte 40 (big-endian): seconds (4), fraction (4)
-  secs = ((uint32_t)buf[40] << 24) |
-         ((uint32_t)buf[41] << 16) |
-         ((uint32_t)buf[42] << 8)  |
-         ((uint32_t)buf[43]);
+  uint32_t secs = ((uint32_t)buf[40] << 24) |
+                  ((uint32_t)buf[41] << 16) |
+                  ((uint32_t)buf[42] << 8)  |
+                  ((uint32_t)buf[43]);
 
-  frac = ((uint32_t)buf[44] << 24) |
-         ((uint32_t)buf[45] << 16) |
-         ((uint32_t)buf[46] << 8)  |
-         ((uint32_t)buf[47]);
-
-  //Serial.print("[NTP] Transmit timestamp: ");
-  //Serial.print(secs);
-  //Serial.print(".");
-  //Serial.println(frac);
+  uint32_t frac = ((uint32_t)buf[44] << 24) |
+                  ((uint32_t)buf[45] << 16) |
+                  ((uint32_t)buf[46] << 8)  |
+                  ((uint32_t)buf[47]);
 
   // Basic sanity: NTP time should be after Jan 1, 2000 (946684800 Unix)
   uint32_t unixSecs = secs - NTP_UNIX_EPOCH_DIFF;
@@ -224,19 +265,17 @@ bool NTPClient::readResponse(uint32_t& secs, uint32_t& frac) {
     return false;
   }
 
-  Serial.println("[NTP] Response validation successful");
+  // Convert to microseconds
+  microseconds = ((uint64_t)unixSecs * 1000000ULL) + ntpFracToMicros(frac);
   return true;
 }
 
-bool NTPClient::syncInstance(uint16_t timeout_ms) {
+
+bool NTPClient::requestTimeInstance() {
   if (!_serverResolved) {
     Serial.println("[NTP] ERROR: Cannot sync - server not resolved");
     return false;
   }
-
-  //Serial.print("[NTP] Starting sync with timeout: ");
-  //Serial.print(timeout_ms);
-  //Serial.println("ms");
 
   // Flush any stale packets
   int flushed = 0;
@@ -255,69 +294,42 @@ bool NTPClient::syncInstance(uint16_t timeout_ms) {
     Serial.println("[NTP] ERROR: Failed to send request");
     return false;
   }
-
-  //Serial.println("[NTP] Waiting for response...");
-  uint32_t start = millis();
-  uint32_t lastCheck = start;
-  
-  while ((uint16_t)(millis() - start) < timeout_ms) {
-    uint32_t secs = 0, frac = 0;
-    if (readResponse(secs, frac)) {
-      // Capture local clock as close as possible to packet read
-      uint32_t localMicros = micros();
-
-      uint64_t unixSecs = (uint64_t)(secs - NTP_UNIX_EPOCH_DIFF);
-      uint64_t unixFracUs = ntpFracToMicros(frac);
-      uint64_t unixUs = unixSecs * 1000000ULL + unixFracUs;
-
-      _epochUsAtSync = unixUs;    // this corresponds roughly to localMicros moment
-      _microsAtSync = localMicros;
-      _synced = true;
-      
-      Serial.println("[NTP] Sync successful");
-      //Serial.print("[NTP] NTP timestamp: ");
-      //Serial.print(secs);
-      //Serial.print(".");
-      //Serial.println(frac);
-
-      //Serial.print("[NTP] Unix time (s): ");
-      //Serial.println((unsigned long)(unixUs / 1000000ULL));
-      
-      //Serial.print("[NTP] Unix time (us): ");
-      //Serial.print((unsigned long)(unixUs / 1000000ULL));
-      //Serial.print("_");
-      //Serial.println((unsigned long)(unixUs % 1000000ULL));
-
-      //char buf[32];
-      //sprintf(buf, "%llu", (unsigned long long)unixUs);
-      //Serial.println(buf);
-
-      return true;
-    }
-    
-    // Print progress every 1000ms
-    if (millis() - lastCheck >= 1000) {
-      Serial.print("[NTP] Still waiting... (");
-      Serial.print(millis() - start);
-      Serial.println("ms elapsed)");
-      lastCheck = millis();
-    }
-    
-    // brief yield; small delay helps some MCUs
-    delay(10);  // Slightly longer delay for better responsiveness
-  }
-  
-  Serial.print("[NTP] Sync timeout after ");
-  Serial.print(timeout_ms);
-  Serial.println("ms");
-  return false;
+  return true;
 }
 
-uint64_t NTPClient::nowMicrosInstance() const {
+void NTPClient::updateInstance() {
+  if (responsesProcessed < responsesReceived) {
+    uint64_t now = HardwareTimer::getMicros64();
+    uint64_t serverMicroseconds = 0;
+    if (readResponse(serverMicroseconds)) {
+      responsesProcessed++;
+      Serial.print("[NTP] Processing response, ");
+      Serial.print("Responses received: ");
+      Serial.print(responsesReceived);
+      Serial.print(", Responses processed: ");
+      Serial.println(responsesProcessed);
+
+      _serverMicrosAtSync = serverMicroseconds;
+      _localMicrosAtSync = now;
+      _synced = true;
+    }
+
+    clearSIRs();
+    enableSIRs();
+  }
+}
+
+
+uint64_t NTPClient::serverMicrosAtSyncInstance() {
   if (!_synced) return 0ULL;
 
-  // unsigned arithmetic handles wrap of micros()
-  uint32_t nowLocal = micros();
-  uint32_t elapsed = nowLocal - _microsAtSync; // wraps safely
-  return _epochUsAtSync + (uint64_t)elapsed;
+  uint64_t nowLocal = HardwareTimer::getMicros64();
+  uint64_t elapsed = nowLocal - _localMicrosAtSync;
+  return _serverMicrosAtSync + elapsed;
 }
+
+uint64_t NTPClient::localMicrosAtSyncInstance() {
+  if (!_synced) return 0ULL;
+  return _localMicrosAtSync;
+}
+
