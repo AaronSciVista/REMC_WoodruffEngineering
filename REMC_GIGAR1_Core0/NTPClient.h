@@ -67,6 +67,4 @@ private:
   bool _synced = false;
   uint64_t _serverMicrosAtSync = 0;
   uint64_t _localMicrosAtSync = 0; 
-  uint64_t _localMicrosWhenRequestSent = 0;
-  uint64_t _localMicrosWhenResponseReceived = 0; 
 };
