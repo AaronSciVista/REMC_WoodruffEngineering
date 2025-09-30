@@ -3,7 +3,7 @@
 #define PIN_CONFIG_H
 
 // Digital Inputs
-#define PIN_ACTUATE      D2
+#define PIN_ACTUATE      D7
 #define PIN_ARM          D3
 #define PIN_MSW_POS_A    D32
 #define PIN_MSW_POS_B    D34
