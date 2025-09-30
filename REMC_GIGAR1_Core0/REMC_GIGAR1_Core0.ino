@@ -46,16 +46,9 @@ void setup() {
       Serial.println("[Serial Core] Failed to initialize hardware timer");
   }
 
-  Serial.println("[Serial Core] NTP beginning.");
-  // Initialize the singleton with a shared UDP object
   NTPClient::initialize(UdpManager::getNTPUdpObject());
-  Serial.println("[Serial Core] NTP initialized.");
   NTPClient::begin(Config::NTP_SERVER, Config::NTP_CLIENT_PORT);
-  Serial.println("[Serial Core] NTP begun.");
-  if(NTPClient::sync()) {
-    Serial.println("[Serial Core] NTP synced.");
-  }
-  else Serial.println("[Serial Core] NTP FAILED TO SYNC.");
+  Serial.println("[Serial Core] NTP initialized.");
 
   // Initialize TimeMapper after both HardwareTimer and NTP are ready
   Serial.println("[Serial Core] TimeMapper beginning.");
@@ -83,6 +76,8 @@ void loop() {
   
   // Handle incoming UDP commands
   UdpManager::update();
+
+  NTPClient::update();
 
   // Update TimeMapper (handles automatic NTP re-sync every 10 seconds)
   TimeMapper::update();

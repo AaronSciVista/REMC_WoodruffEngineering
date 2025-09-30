@@ -6,7 +6,7 @@
 #include "stm32h7xx.h"
 
 // Digital Inputs
-#define PIN_ACTUATE      D2
+#define PIN_ACTUATE      D7
 #define PIN_ARM          D3
 #define PIN_MSW_POS_A    D51
 #define PIN_MSW_POS_B    D53

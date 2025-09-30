@@ -3,6 +3,12 @@
 #include <Ethernet.h>
 #include <EthernetUdp.h>
 #include <Dns.h>
+#include "HardwareTimer.h"
+
+
+
+
+
 
 class NTPClient {
 public:
@@ -10,55 +16,32 @@ public:
   static NTPClient& getInstance();
   
   // Static initialization method for setting UDP object
-  static void initialize(EthernetUDP* udp = nullptr);
-  
-  // Static convenience methods for global access
-  static uint64_t nowMicros();
-  static bool hasSynced();
-  static uint64_t lastSyncUnixUs();
-  static uint64_t baseOffsetUs();
-  static bool sync(uint16_t timeout_ms = 1000);
+  static void initialize(EthernetUDP* udp);
   static bool begin(const char* server, uint16_t ntpPort = 123);
+  static bool requestTime();
+  static void update();
+  static bool hasSynced();
+  static uint64_t serverMicrosAtSync();
+  static uint64_t localMicrosAtSync();
 
   // You may pass a shared UDP instance if you want; otherwise default-construct one.
-  explicit NTPClient(EthernetUDP* udp = nullptr);
-
-  // Begin with server (IP string or hostname), remote NTP port (123 or 12300), and local UDP port to bind.
-  // Returns true if UDP is ready and server was parsed/resolved.
-  bool beginInstance(const char* server, uint16_t ntpPort = 123);
-
-  // Force a sync: send an NTP request and set internal epoch on success.
-  // timeout_ms: how long to wait for a reply (default 1000ms).
-  // Returns true if a valid reply was received and time synced.
-  bool syncInstance(uint16_t timeout_ms = 1000);
-
-  // Returns Unix time in microseconds (UTC) based on last successful sync.
-  // If never synced, returns 0.
-  uint64_t nowMicrosInstance() const;
-
-  // Returns the offset (us) between device's micros() clock and Unix epoch at the last sync.
-  // I.e., epoch_us_at_sync - micros_at_sync.
-  uint64_t baseOffsetUsInstance() const { return _epochUsAtSync - (uint64_t)_microsAtSync; }
-
-  // When was the last successful sync (Unix us)? 0 if never.
-  uint64_t lastSyncUnixUsInstance() const { return _epochUsAtSync; }
-
-  // Was there at least one successful sync?
-  bool hasSyncedInstance() const { return _synced; }
-
-  // Optionally change remote port (e.g., switch between 123 and 12300)
-  void setServerPort(uint16_t port) { _serverPort = port; }
-
-  // Optionally change server (string can be "x.y.z.w" or hostname)
-  bool setServer(const char* server);
+  explicit NTPClient(EthernetUDP* udp);
 
 private:
-  // Private constructor for singleton (use getInstance())
-  // Note: public constructor still available for direct instantiation if needed
-  
+
+  bool beginInstance(const char* server, uint16_t ntpPort = 123);
+  bool requestTimeInstance();
+  void updateInstance();
+
+  bool hasSyncedInstance() const { return _synced; }
+  uint64_t serverMicrosAtSyncInstance();
+  uint64_t localMicrosAtSyncInstance();
+
+  // Was there at least one successful sync?
+
   bool resolveServerIP(const char* server);
   bool sendRequest();
-  bool readResponse(uint32_t& secs, uint32_t& frac);
+  bool readResponse(uint64_t& microseconds);
 
   static uint64_t ntpFracToMicros(uint32_t frac) {
     // Convert 32-bit NTP fractional seconds to microseconds: frac * 1e6 / 2^32
@@ -76,9 +59,10 @@ private:
   uint16_t _localPort = 0;
 
   bool _serverResolved = false;
+  bool _interruptEnabled = false;
 
   // Sync anchors
   bool _synced = false;
-  uint64_t _epochUsAtSync = 0;  // Unix epoch microseconds at the moment we captured micros()
-  uint32_t _microsAtSync = 0;   // micros() snapshot at sync
+  uint64_t _serverMicrosAtSync = 0;  // Unix epoch microseconds at the moment we captured micros()
+  uint64_t _localMicrosAtSync = 0;  // Unix epoch microseconds at the moment we captured micros()
 };
