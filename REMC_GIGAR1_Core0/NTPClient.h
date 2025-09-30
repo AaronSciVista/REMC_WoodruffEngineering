@@ -22,6 +22,7 @@ public:
   static void update();
   static bool hasSynced();
   static uint64_t serverMicrosAtSync();
+  static uint64_t serverMicrosNow();
   static uint64_t localMicrosAtSync();
 
   // You may pass a shared UDP instance if you want; otherwise default-construct one.
@@ -35,6 +36,7 @@ private:
 
   bool hasSyncedInstance() const { return _synced; }
   uint64_t serverMicrosAtSyncInstance();
+  uint64_t serverMicrosNowInstance();
   uint64_t localMicrosAtSyncInstance();
 
   // Was there at least one successful sync?

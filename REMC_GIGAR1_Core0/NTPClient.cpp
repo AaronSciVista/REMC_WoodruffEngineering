@@ -38,6 +38,9 @@ void NTPClient::initialize(EthernetUDP* udp) {
 uint64_t NTPClient::serverMicrosAtSync() {
   return getInstance().serverMicrosAtSyncInstance();
 }
+uint64_t NTPClient::serverMicrosNow() {
+  return getInstance().serverMicrosNowInstance();
+}
 uint64_t NTPClient::localMicrosAtSync() {
   return getInstance().localMicrosAtSyncInstance();
 }
@@ -319,8 +322,12 @@ void NTPClient::updateInstance() {
   }
 }
 
-
 uint64_t NTPClient::serverMicrosAtSyncInstance() {
+  if (!_synced) return 0ULL;
+  return _serverMicrosAtSync;
+}
+
+uint64_t NTPClient::serverMicrosNowInstance() {
   if (!_synced) return 0ULL;
 
   uint64_t nowLocal = HardwareTimer::getMicros64();
