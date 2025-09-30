@@ -304,7 +304,6 @@ bool NTPClient::requestTimeInstance() {
 
 void NTPClient::updateInstance() {
   if (responsesProcessed < responsesReceived) {
-    uint64_t now = HardwareTimer::getMicros64();
     
     uint64_t serverMicrosecondsInPacket = 0;
     if (readResponse(serverMicrosecondsInPacket)) {
@@ -323,7 +322,7 @@ void NTPClient::updateInstance() {
       // This is an approximation, but it's better than nothing
       // It will be accurate if both legs of the roundtrip are of similar duration
       _serverMicrosAtSync = serverMicrosecondsInPacket + roundtripTime/2;
-      _localMicrosAtSync = now;
+      _localMicrosAtSync = _localMicrosWhenResponseReceived;
       _synced = true;
     }
 
