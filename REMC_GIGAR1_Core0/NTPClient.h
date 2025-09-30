@@ -65,6 +65,8 @@ private:
 
   // Sync anchors
   bool _synced = false;
-  uint64_t _serverMicrosAtSync = 0;  // Unix epoch microseconds at the moment we captured micros()
-  uint64_t _localMicrosAtSync = 0;  // Unix epoch microseconds at the moment we captured micros()
+  uint64_t _serverMicrosAtSync = 0;
+  uint64_t _localMicrosAtSync = 0; 
+  uint64_t _localMicrosWhenRequestSent = 0;
+  uint64_t _localMicrosWhenResponseReceived = 0; 
 };
