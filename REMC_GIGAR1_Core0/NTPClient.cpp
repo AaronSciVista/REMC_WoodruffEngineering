@@ -59,6 +59,10 @@ bool NTPClient::begin(const char* server, uint16_t ntpPort) {
 void NTPClient::update() {
   getInstance().updateInstance();
 }
+
+void NTPClient::printMetricsStatistics() {
+  getInstance().printMetricsStatisticsInstance();
+}
 // -------------
 
 
@@ -305,6 +309,9 @@ bool NTPClient::requestTimeInstance() {
 void NTPClient::updateInstance() {
   if (responsesProcessed < responsesReceived) {
     
+    // use me for metrics
+    uint64_t now = HardwareTimer::getMicros64();
+
     uint64_t serverMicrosecondsInPacket = 0;
     if (readResponse(serverMicrosecondsInPacket)) {
       responsesProcessed++;
@@ -317,6 +324,16 @@ void NTPClient::updateInstance() {
       uint64_t roundtripTime = _localMicrosWhenResponseReceived - _localMicrosWhenRequestSent;
       Serial.print(", Roundtrip time: ");
       Serial.println(roundtripTime);
+
+      // Collect and print metrics for analysis
+      // Aaron Note 10.1.2025 - If you want to collect metrics, un-comment the code below
+      // NTPMetrics metric;
+      // metric.roundTripTime = roundtripTime;
+      // metric.responseNowDifference = now - _localMicrosWhenResponseReceived;
+      // metric.inaccurateRoundTripTime = now - _localMicrosWhenRequestSent;
+      // addMetric(metric);
+      // printMetricsStatistics();
+
 
       // The server's time when we're doing the syncing is the time in the packet plus half the roundtrip time
       // This is an approximation, but it's better than nothing
@@ -347,5 +364,108 @@ uint64_t NTPClient::serverMicrosNowInstance() {
 uint64_t NTPClient::localMicrosAtSyncInstance() {
   if (!_synced) return 0ULL;
   return _localMicrosAtSync;
+}
+
+// Ring buffer implementation for metrics
+void NTPClient::addMetric(const NTPMetrics& metric) {
+  _metricsBuffer[_metricsIndex] = metric;
+  _metricsIndex = (_metricsIndex + 1) % METRICS_BUFFER_SIZE;
+  if (_metricsCount < METRICS_BUFFER_SIZE) {
+    _metricsCount++;
+  }
+}
+
+// Statistics calculation
+void NTPClient::calculateStatistics(uint64_t& mean, uint64_t& min, uint64_t& max, double& stdev, 
+                                   const uint64_t* data, size_t count) const {
+  if (count == 0) {
+    mean = min = max = 0;
+    stdev = 0.0;
+    return;
+  }
+
+  // Initialize min/max with first value
+  min = max = data[0];
+  uint64_t sum = 0;
+
+  // Calculate sum, min, max
+  for (size_t i = 0; i < count; i++) {
+    sum += data[i];
+    if (data[i] < min) min = data[i];
+    if (data[i] > max) max = data[i];
+  }
+
+  // Calculate mean
+  mean = sum / count;
+
+  // Calculate standard deviation
+  double variance = 0.0;
+  for (size_t i = 0; i < count; i++) {
+    double diff = (double)data[i] - (double)mean;
+    variance += diff * diff;
+  }
+  variance /= count;
+  stdev = sqrt(variance);
+}
+
+// Print comprehensive metrics statistics
+void NTPClient::printMetricsStatisticsInstance() const {
+  if (_metricsCount == 0) {
+    Serial.println("[NTP Metrics] No data collected yet");
+    return;
+  }
+
+  Serial.println("\n=== NTP Metrics Statistics ===");
+  Serial.print("Samples collected: ");
+  Serial.println(_metricsCount);
+  Serial.print("Current server time: ");
+  Serial.println(serverMicrosNow());
+  // Extract data arrays for each metric
+  uint64_t roundTripTimes[METRICS_BUFFER_SIZE];
+  uint64_t responseNowDiffs[METRICS_BUFFER_SIZE];
+  uint64_t inaccurateRoundTrips[METRICS_BUFFER_SIZE];
+
+  size_t actualCount = min(_metricsCount, METRICS_BUFFER_SIZE);
+  for (size_t i = 0; i < actualCount; i++) {
+    size_t idx = (_metricsIndex - actualCount + i + METRICS_BUFFER_SIZE) % METRICS_BUFFER_SIZE;
+    roundTripTimes[i] = _metricsBuffer[idx].roundTripTime;
+    responseNowDiffs[i] = _metricsBuffer[idx].responseNowDifference;
+    inaccurateRoundTrips[i] = _metricsBuffer[idx].inaccurateRoundTripTime;
+  }
+
+  // Round Trip Time Statistics
+  uint64_t rttMean, rttMin, rttMax;
+  double rttStdev;
+  calculateStatistics(rttMean, rttMin, rttMax, rttStdev, roundTripTimes, actualCount);
+  
+  Serial.println("\n--- Round Trip Time (μs) ---");
+  Serial.print("Mean: "); Serial.println(rttMean);
+  Serial.print("Min:  "); Serial.println(rttMin);
+  Serial.print("Max:  "); Serial.println(rttMax);
+  Serial.print("Stdev: "); Serial.println(rttStdev, 2);
+
+  // Response-Now Difference Statistics
+  uint64_t diffMean, diffMin, diffMax;
+  double diffStdev;
+  calculateStatistics(diffMean, diffMin, diffMax, diffStdev, responseNowDiffs, actualCount);
+  
+  Serial.println("\n--- Response-Now Difference (μs) ---");
+  Serial.print("Mean: "); Serial.println(diffMean);
+  Serial.print("Min:  "); Serial.println(diffMin);
+  Serial.print("Max:  "); Serial.println(diffMax);
+  Serial.print("Stdev: "); Serial.println(diffStdev, 2);
+
+  // Inaccurate Round Trip Time Statistics
+  uint64_t irttMean, irttMin, irttMax;
+  double irttStdev;
+  calculateStatistics(irttMean, irttMin, irttMax, irttStdev, inaccurateRoundTrips, actualCount);
+  
+  Serial.println("\n--- Inaccurate Round Trip Time (μs) ---");
+  Serial.print("Mean: "); Serial.println(irttMean);
+  Serial.print("Min:  "); Serial.println(irttMin);
+  Serial.print("Max:  "); Serial.println(irttMax);
+  Serial.print("Stdev: "); Serial.println(irttStdev, 2);
+
+  Serial.println("===============================\n");
 }
 
