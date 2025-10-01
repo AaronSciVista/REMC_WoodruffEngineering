@@ -86,13 +86,14 @@ inline void enableSIRs() {W5100.writeSIMR(0x04);}
 // Interrupt service routine
 uint32_t requestsSent = 0;
 uint32_t responsesReceived = 0;
-uint64_t lastResponseTime = 0;
 uint32_t responsesProcessed = 0;
+uint64_t _localMicrosWhenRequestSent = 0;
+uint64_t _localMicrosWhenResponseReceived = 0; 
 
 void socketISR()
 {
   uint64_t now = HardwareTimer::getMicros64();
-  lastResponseTime = now;
+  _localMicrosWhenResponseReceived = now;
   responsesReceived++;
 }
 // -------------
@@ -293,6 +294,7 @@ bool NTPClient::requestTimeInstance() {
     //Serial.println(" stale packets");
   }
 
+  _localMicrosWhenRequestSent = HardwareTimer::getMicros64();
   if (!sendRequest()) {
     Serial.println("[NTP] ERROR: Failed to send request");
     return false;
@@ -302,18 +304,25 @@ bool NTPClient::requestTimeInstance() {
 
 void NTPClient::updateInstance() {
   if (responsesProcessed < responsesReceived) {
-    uint64_t now = HardwareTimer::getMicros64();
-    uint64_t serverMicroseconds = 0;
-    if (readResponse(serverMicroseconds)) {
+    
+    uint64_t serverMicrosecondsInPacket = 0;
+    if (readResponse(serverMicrosecondsInPacket)) {
       responsesProcessed++;
       Serial.print("[NTP] Processing response, ");
       Serial.print("Responses received: ");
       Serial.print(responsesReceived);
       Serial.print(", Responses processed: ");
-      Serial.println(responsesProcessed);
+      Serial.print(responsesProcessed);
 
-      _serverMicrosAtSync = serverMicroseconds;
-      _localMicrosAtSync = now;
+      uint64_t roundtripTime = _localMicrosWhenResponseReceived - _localMicrosWhenRequestSent;
+      Serial.print(", Roundtrip time: ");
+      Serial.println(roundtripTime);
+
+      // The server's time when we're doing the syncing is the time in the packet plus half the roundtrip time
+      // This is an approximation, but it's better than nothing
+      // It will be accurate if both legs of the roundtrip are of similar duration
+      _serverMicrosAtSync = serverMicrosecondsInPacket + roundtripTime/2;
+      _localMicrosAtSync = _localMicrosWhenResponseReceived;
       _synced = true;
     }
 
