@@ -24,6 +24,7 @@ public:
   static uint64_t serverMicrosAtSync();
   static uint64_t serverMicrosNow();
   static uint64_t localMicrosAtSync();
+  static void printMetricsStatistics();
 
   // You may pass a shared UDP instance if you want; otherwise default-construct one.
   explicit NTPClient(EthernetUDP* udp);
@@ -67,4 +68,22 @@ private:
   bool _synced = false;
   uint64_t _serverMicrosAtSync = 0;
   uint64_t _localMicrosAtSync = 0; 
+
+  // Metrics collection
+  struct NTPMetrics {
+    uint64_t roundTripTime;           // Actual round trip time using interrupt timestamp
+    uint64_t responseNowDifference;   // Difference between response received and 'now'
+    uint64_t inaccurateRoundTripTime; // Round trip time if using 'now' instead of interrupt timestamp
+  };
+
+  static const size_t METRICS_BUFFER_SIZE = 1000;
+  NTPMetrics _metricsBuffer[METRICS_BUFFER_SIZE];
+  size_t _metricsIndex = 0;
+  size_t _metricsCount = 0;
+
+  // Statistics calculation methods
+  void addMetric(const NTPMetrics& metric);
+  void calculateStatistics(uint64_t& mean, uint64_t& min, uint64_t& max, double& stdev, 
+                          const uint64_t* data, size_t count) const;
+  void printMetricsStatisticsInstance() const;
 };

@@ -93,16 +93,17 @@ void SampleCollector::update() {
                     // Send this sample as individual telemetry (not part of a batch)
                     UdpManager::addSample(sampleBuffer[i]);
                     UdpManager::flushSamples();
-                    
+
+                    // Aaron Note 10.1.2025 - If you want to report SharedRing buffer metrics, un-comment the code below
                     // Print SharedRing buffer status
-                    Serial.print("[SampleCollector] Live feed sent - SharedRing status: head=");
-                    Serial.print(g_ring.head);
-                    Serial.print(", tail=");
-                    Serial.print(g_ring.tail);
-                    Serial.print(", overruns=");
-                    Serial.print(g_ring.overruns);
-                    Serial.print(", capacity=");
-                    Serial.println(g_ring.capacity);
+                    // Serial.print("[SampleCollector] Live feed sent - SharedRing status: head=");
+                    // Serial.print(g_ring.head);
+                    // Serial.print(", tail=");
+                    // Serial.print(g_ring.tail);
+                    // Serial.print(", overruns=");
+                    // Serial.print(g_ring.overruns);
+                    // Serial.print(", capacity=");
+                    // Serial.println(g_ring.capacity);
                 }
             }
         }
